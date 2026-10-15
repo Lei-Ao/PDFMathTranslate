@@ -63,18 +63,19 @@ class ConfigManager:
         """递归移除循环引用"""
         if seen is None:
             seen = set()
+        if not isinstance(obj, (dict, list)):
+            return obj
         obj_id = id(obj)
         if obj_id in seen:
             return None  # 遇到已处理过的对象，视为循环引用
         seen.add(obj_id)
 
-        if isinstance(obj, dict):
-            return {
-                k: self._remove_circular_references(v, seen) for k, v in obj.items()
-            }
-        elif isinstance(obj, list):
+        try:
+            if isinstance(obj, dict):
+                return {k: self._remove_circular_references(v, seen) for k, v in obj.items()}
             return [self._remove_circular_references(i, seen) for i in obj]
-        return obj
+        finally:
+            seen.remove(obj_id)
 
     @classmethod
     def custome_config(cls, file_path):

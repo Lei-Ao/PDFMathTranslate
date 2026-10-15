@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PDF 对照阅读</title>
+  <link rel="stylesheet" href="../assets/theme.css">
+  <script defer src="../assets/reader.js"></script>
+</head>
+<body>
+  <header>
+    <a class="back-link" href="/" title="返回上传页" aria-label="返回上传页">‹</a>
+    <div class="identity"><span class="reader-mark">Ⅱ</span><strong id="filename">对照阅读</strong></div>
+    <div class="controls">
+      <button id="previous" title="上一页" aria-label="上一页">‹</button>
+      <label class="page-control"><input id="page" type="number" min="1" value="1" aria-label="页码"><span id="total">/ —</span></label>
+      <button id="next" title="下一页" aria-label="下一页">›</button>
+      <details id="reader-menu" class="reader-menu">
+        <summary title="阅读选项" aria-label="阅读选项">•••</summary>
+        <div class="reader-menu-panel">
+          <p class="menu-heading">阅读设置</p>
+          <label class="menu-field">页面缩放<select id="zoom" aria-label="缩放"><option value="fit">适合宽度</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select></label>
+          <label class="sync"><input id="sync" type="checkbox" checked>同步滚动</label>
+          <div class="menu-divider"></div>
+          <a class="download-link" href="/?settings=open">模型与接口设置</a>
+          <a id="download-mono" class="download-link" hidden>下载译文 PDF ↗</a>
+          <a id="download-dual" class="download-link" hidden>下载双语 PDF ↗</a>
+          <button id="fullscreen" class="menu-action">进入浏览器全屏</button>
+          <button id="focus" class="menu-action">隐藏工具栏 · 专注阅读</button>
+          <div class="menu-status"><span id="status">原文与译文按页对齐</span><br>任意一侧滚动 · 支持文字选择</div>
+        </div>
+      </details>
+    </div>
+  </header>
+  <div id="notice" role="status" hidden></div>
+  <main>
+    <section><div class="panel-heading"><span class="dot original"></span>原文<span class="panel-detail">原始文档</span></div><div id="original" class="viewport" tabindex="0" aria-label="原文阅读区"><div class="empty"><b>原文 PDF</b><p>上传文件后在这里显示原文</p></div></div></section>
+    <section><div class="panel-heading"><span class="dot translated"></span>译文<span class="panel-detail">翻译结果</span></div><div id="translated" class="viewport" tabindex="0" aria-label="译文阅读区"><div class="empty"><b>等待翻译</b><p>翻译完成后，译文会自动出现在这里</p></div></div></section>
+  </main>
+  <button id="focus-exit" class="focus-exit">恢复工具栏 · Esc</button>
+</body>
+</html>

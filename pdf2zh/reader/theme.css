@@ -1,0 +1,45 @@
+:root { --ink:#243b39; --muted:#7a8580; --line:#e4e8e2; --paper:#fcfdfa; --teal:#217965; --pale:#edf4ee; color-scheme:light; }
+* { box-sizing:border-box; }
+html,body { margin:0; height:100%; overflow:hidden; }
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; color:var(--ink); background:var(--paper); display:flex; flex-direction:column; font-size:12px; }
+button,input,select { font:inherit; } button,a,select { -webkit-tap-highlight-color:transparent; }
+button { border:0; background:none; color:inherit; cursor:pointer; }
+a { color:inherit; text-decoration:none; } button:disabled { opacity:.35; cursor:default; }
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:3px solid #9acabc; outline-offset:3px; }
+header { height:48px; flex-shrink:0; background:var(--paper); border-bottom:1px solid var(--line); padding:0 22px; display:flex; align-items:center; gap:16px; position:relative; z-index:5; }
+.back-link { width:27px; height:30px; display:grid; place-items:center; font-size:24px; color:#72846c; border-radius:5px; }
+.back-link:hover { background:#edf4e9; }
+.identity { display:flex; align-items:center; gap:10px; flex:1; min-width:0; }
+.reader-mark { width:25px; height:27px; background:#217965; color:#fff; border-radius:6px; display:grid; place-items:center; font:19px Georgia,serif; }
+.identity strong { font-weight:500; font-size:12px; color:#53694f; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.controls { display:flex; gap:8px; align-items:center; flex-shrink:0; margin-left:auto; }
+.controls>button { width:25px; height:28px; font-size:21px; border-radius:5px; }.controls>button:hover { background:#edf4e9; }
+.page-control { display:flex; gap:6px; align-items:center; color:#8c9982; font-size:11px; }
+.page-control input { width:36px; height:25px; text-align:center; border:1px solid #e4e9df; border-radius:4px; background:#f8faf5; color:#53694f; appearance:textfield; padding:0; }
+.page-control input::-webkit-inner-spin-button { appearance:none; }
+.reader-menu { position:relative; margin-left:10px; }
+.reader-menu summary { list-style:none; cursor:pointer; font-size:16px; letter-spacing:2px; color:#788a70; height:28px; width:30px; display:grid; place-items:center; border-radius:5px; }
+.reader-menu summary::-webkit-details-marker { display:none; }.reader-menu summary:hover { background:#edf4e9; }
+.reader-menu-panel { position:absolute; top:37px; right:0; width:272px; padding:18px; background:#fcfdfa; border:1px solid #dce5d4; border-radius:10px; box-shadow:0 16px 50px #2331251c; display:flex; flex-direction:column; gap:14px; }
+.menu-heading { color:#91a085; font-size:10px; letter-spacing:1px; margin:0 0 2px; }
+.menu-field { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#65785f; gap:14px; }
+select { padding:6px 7px; font-size:11px; background:#f8faf5; border:1px solid var(--line); color:#53694f; border-radius:5px; }
+.sync { display:flex; align-items:center; gap:7px; font-size:12px; color:#65785f; }.sync input { accent-color:var(--teal); }
+.menu-divider { border-top:1px solid var(--line); margin:1px 0; }
+.download-link,.menu-action { display:block; width:100%; text-align:left; color:#65785f; font-size:12px; padding:9px 8px; border-radius:5px; }
+.download-link:hover,.menu-action:hover { background:#edf4ee; color:var(--teal); }.download-link[hidden] { display:none; }
+.menu-status { color:#94a08a; font-size:10px; line-height:1.8; border-top:1px solid var(--line); padding-top:12px; }
+main { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:1px; background:var(--line); }
+section { display:flex; flex-direction:column; min-height:0; min-width:0; background:#fff; }section+section { border-left:0; }
+.panel-heading { height:34px; flex-shrink:0; padding:0 20px; display:flex; align-items:center; gap:8px; font-size:10px; color:#73866a; background:#f9fbf6; border-bottom:1px solid var(--line); }
+.panel-detail { margin-left:auto; font-size:9px; color:#a1ad94; }.dot { width:5px; height:5px; border-radius:50%; }.dot.original { background:#c2cbb8; }.dot.translated { background:#6d9e79; }
+.viewport { overflow:auto; flex:1; min-height:0; position:relative; padding:0; overscroll-behavior:contain; scrollbar-gutter:stable; scrollbar-width:thin; scrollbar-color:#c9d3c3 transparent; }
+.pdf-page { position:relative; background:#fff; margin:0 auto 16px; overflow:hidden; flex-shrink:0; }
+.pdf-page>img { position:absolute; inset:0; width:100%; height:100%; display:block; }
+.page-number { position:absolute; inset:45% 0 auto; text-align:center; color:#a4b198; font-size:11px; pointer-events:none; }.pdf-page.loaded .page-number { display:none; }
+.text-layer { position:absolute; inset:0; overflow:hidden; line-height:1; }.text-layer span { position:absolute; color:transparent; white-space:pre; transform-origin:0 0; cursor:text; }.text-layer ::selection { background:#9cd9b54f; color:transparent; }
+.empty { height:100%; min-height:240px; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#99a58e; text-align:center; padding:20px; }.empty b { font:23px Georgia,"Songti SC","SimSun",serif; color:#7e9274; font-weight:400; }.empty p { font-size:12px; line-height:1.8; max-width:260px; }
+#notice { background:#faf5e9; border-bottom:1px solid #ebddbe; color:#947342; padding:9px 16px; font-size:12px; }
+.page-error { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#f9fbf6; color:#8c9b80; gap:10px; }.page-error button { font-size:12px; padding:8px 12px; border:1px solid var(--line); border-radius:6px; }
+.focus-exit { display:none; }.focus-reading header,.focus-reading .panel-heading { display:none; }.focus-reading .focus-exit { display:block; position:fixed; right:18px; bottom:16px; background:#ffffffe6; border:1px solid var(--line); border-radius:6px; color:#7a8971; font-size:10px; opacity:.55; z-index:10; padding:7px 10px; }.focus-exit:hover,.focus-exit:focus-visible { opacity:1; }
+@media(max-width:760px) { header { padding:0 10px; gap:6px; }.identity strong { font-size:11px; }.reader-mark { display:none; }.controls { gap:3px; }.panel-heading { padding:0 10px; }.panel-detail { display:none; }.reader-menu { margin-left:4px; }.reader-menu-panel { width:min(272px,calc(100vw - 20px)); } }
