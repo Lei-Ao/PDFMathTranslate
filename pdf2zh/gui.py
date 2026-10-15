@@ -1,10 +1,15 @@
 import asyncio
 import cgi
 import os
+import queue
 import shutil
 import socket
+import threading
+import time
+import traceback
 import uuid
 from asyncio import CancelledError
+from html import escape as _html_escape
 from pathlib import Path
 import typing as T
 
@@ -263,7 +268,6 @@ def translate_file(
     mode_choice,
     recaptcha_response,
     state,
-    progress=gr.Progress(),
     *envs,
 ):
     """
@@ -299,8 +303,6 @@ def translate_file(
     # Translate PDF content using selected service.
     if flag_demo and not verify_recaptcha(recaptcha_response):
         raise gr.Error("人机验证未通过，请重试")
-
-    progress(0, desc="正在准备翻译…")
 
     output = Path("pdf2zh_files")
     output.mkdir(parents=True, exist_ok=True)
@@ -350,74 +352,103 @@ def translate_file(
 
     print(f"Files before translation: {os.listdir(output)}")
 
-    def progress_bar(t: tqdm.tqdm):
-        progress(t.n / t.total, desc="正在翻译文档…")
-
     try:
         threads = int(threads)
     except ValueError:
         threads = 1
 
-    param = {
-        "files": [str(file_raw)],
-        "pages": selected_page,
-        "lang_in": lang_from,
-        "lang_out": lang_to,
-        "service": f"{translator.name}",
-        "output": output,
-        "thread": int(threads),
-        "callback": progress_bar,
-        "cancellation_event": cancellation_event_map[session_id],
-        "envs": _envs,
-        "prompt": Template(prompt) if prompt else None,
-        "skip_subset_fonts": skip_subset_fonts,
-        "ignore_cache": ignore_cache,
-        "vfont": vfont,  # 添加自定义公式字体正则表达式
-        "model": ModelInstance.value,
-    }
+    _progress_begin("正在准备翻译…")
 
-    try:
-        from pdf2zh.kernel import KernelRegistry
-        from pdf2zh.kernel.protocol import TranslateRequest
+    # 翻译在后台线程里跑，本生成器负责把进度实时 yield 给界面。
+    progress_queue: queue.Queue = queue.Queue()
+    outcome: dict = {}
 
-        KernelRegistry.switch(mode_choice)
-        kernel = KernelRegistry.get()
-        request = TranslateRequest(
-            files=[str(file_raw)],
-            output=str(output),
-            pages=selected_page,
-            lang_in=lang_from,
-            lang_out=lang_to,
-            service=f"{translator.name}",
-            thread=int(threads),
-            envs=_envs,
-            prompt=str(prompt) if prompt else None,
-            skip_subset_fonts=skip_subset_fonts,
-            ignore_cache=ignore_cache,
-            vfont=vfont,
-        )
-        kernel.translate(
-            request,
-            callback=progress_bar,
-            cancellation_event=cancellation_event_map[session_id],
-        )
-    except CancelledError:
-        del cancellation_event_map[session_id]
-        raise gr.Error("翻译已取消")
+    def progress_bar(t: tqdm.tqdm):
+        try:
+            current = int(getattr(t, "n", 0) or 0)
+            total = int(getattr(t, "total", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        _progress_update(current, total)
+        progress_queue.put(None)
+
+    def run_translation():
+        try:
+            from pdf2zh.kernel import KernelRegistry
+            from pdf2zh.kernel.protocol import TranslateRequest
+
+            KernelRegistry.switch(mode_choice)
+            kernel = KernelRegistry.get()
+            request = TranslateRequest(
+                files=[str(file_raw)],
+                output=str(output),
+                pages=selected_page,
+                lang_in=lang_from,
+                lang_out=lang_to,
+                service=f"{translator.name}",
+                thread=int(threads),
+                envs=_envs,
+                prompt=str(prompt) if prompt else None,
+                skip_subset_fonts=skip_subset_fonts,
+                ignore_cache=ignore_cache,
+                vfont=vfont,
+            )
+            kernel.translate(
+                request,
+                callback=progress_bar,
+                cancellation_event=cancellation_event_map[session_id],
+            )
+            outcome["ok"] = True
+        except BaseException as exc:  # 包含 asyncio.CancelledError
+            outcome["error"] = exc
+            outcome["traceback"] = traceback.format_exc()
+            print("翻译过程出错：\n" + outcome["traceback"], flush=True)
+        finally:
+            progress_queue.put(None)
+
+    worker = threading.Thread(
+        target=run_translation, name="pdf2zh-translate", daemon=True,
+    )
+    worker.start()
+    while worker.is_alive():
+        try:
+            progress_queue.get(timeout=0.4)
+        except queue.Empty:
+            pass
+        snapshot = _progress_snapshot()
+        yield _stream_outputs(progress_html(snapshot))
+    worker.join()
+
+    if "error" in outcome:
+        error = outcome["error"]
+        if isinstance(error, CancelledError):
+            cancellation_event_map.pop(session_id, None)
+            _progress_finish("cancelled", "翻译已取消")
+            yield _stream_outputs(progress_html())
+            raise gr.Error("翻译已取消")
+        _progress_finish("error", "翻译失败，详情见运行日志")
+        yield _stream_outputs(progress_html())
+        raise gr.Error(f"翻译失败：{error}")
+
+    _progress_stage("packing", "正在生成 PDF…")
+    yield _stream_outputs(progress_html())
     print(f"Files after translation: {os.listdir(output)}")
 
     if not file_mono.exists() or not file_dual.exists():
+        _progress_finish("error", "未生成翻译结果")
+        yield _stream_outputs(progress_html())
         raise gr.Error("未生成翻译结果，请检查服务配置和日志")
 
-    progress(1.0, desc="翻译完成！")
+    _progress_finish("done", "翻译完成")
 
-    return (
+    yield (
         str(file_mono),
         reader_html(file_raw, file_mono),
         str(file_dual),
         gr.update(visible=True),
         gr.update(visible=True),
         gr.update(visible=True),
+        progress_html(),
     )
 
 
@@ -568,13 +599,143 @@ else:
 
 tech_details_string = f"""
                     <summary>项目信息</summary>
-                    {release_line}- GitHub: <a href="https://github.com/Byaidu/PDFMathTranslate">Byaidu/PDFMathTranslate</a><br>
+                    {release_line}- GitHub: <a href="https://github.com/Lei-Ao/PDFMathTranslate">Lei-Ao/PDFMathTranslate</a><br>
                     - BabelDOC: <a href="https://github.com/funstory-ai/BabelDOC">funstory-ai/BabelDOC</a><br>
-                    - 界面作者：<a href="https://github.com/reycn">Rongxin</a><br>
+                    - 界面作者：Ao-Lei<br>
                     - 引擎版本（pdf2zh）：{__version__} <br>
                     - BabelDOC 版本：{babeldoc_version}
                 """
 cancellation_event_map = {}
+
+# --------------------------------------------------------------- 翻译进度面板
+# translate_file 是生成器：真正的翻译跑在后台线程里，主线程每 0.4 秒把一次进度
+# 快照 yield 给界面。这样翻译过程中面板会一直走动，不会让人误以为没有在翻译。
+_TRANSLATE_PROGRESS = {
+    "active": False,
+    "phase": "idle",  # idle / preparing / translating / packing / done / cancelled / error
+    "current": 0,
+    "total": 0,
+    "started": 0.0,
+    "elapsed": 0.0,
+    "note": "",
+}
+_translate_progress_lock = threading.Lock()
+
+
+def _progress_reset():
+    with _translate_progress_lock:
+        _TRANSLATE_PROGRESS.update(
+            active=False, phase="idle", current=0,
+            total=0, started=0.0, elapsed=0.0, note="",
+        )
+
+
+def _progress_begin(note):
+    with _translate_progress_lock:
+        _TRANSLATE_PROGRESS.update(
+            active=True, phase="preparing", current=0,
+            total=0, started=time.time(), elapsed=0.0, note=note,
+        )
+
+
+def _progress_update(current, total):
+    with _translate_progress_lock:
+        _TRANSLATE_PROGRESS["current"] = current
+        _TRANSLATE_PROGRESS["total"] = total
+        if total:
+            _TRANSLATE_PROGRESS["phase"] = "translating"
+            _TRANSLATE_PROGRESS["note"] = "正在翻译文档…"
+
+
+def _progress_stage(phase, note):
+    with _translate_progress_lock:
+        _TRANSLATE_PROGRESS["phase"] = phase
+        _TRANSLATE_PROGRESS["note"] = note
+
+
+def _progress_finish(phase, note):
+    with _translate_progress_lock:
+        started = _TRANSLATE_PROGRESS["started"] or time.time()
+        _TRANSLATE_PROGRESS.update(
+            active=False, phase=phase, note=note, elapsed=time.time() - started,
+        )
+
+
+def _progress_snapshot():
+    with _translate_progress_lock:
+        state = dict(_TRANSLATE_PROGRESS)
+    if state["active"] and state["started"]:
+        state["elapsed"] = time.time() - state["started"]
+    return state
+
+
+def _human_seconds(value):
+    value = max(0, int(value))
+    if value < 60:
+        return f"{value} 秒"
+    return f"{value // 60} 分 {value % 60:02d} 秒"
+
+
+def progress_html(snapshot=None):
+    """把进度快照渲染成覆盖在上传区上的浮层 HTML；空闲或已完成时返回空串。"""
+    state = _progress_snapshot() if snapshot is None else snapshot
+    # 翻译完成后界面会自动跳到对照阅读页，这里直接收起浮层，
+    # 免得返回上传页时还盖着一块"翻译完成"挡住上传区。
+    if state["phase"] in ("idle", "done"):
+        return ""
+
+    current = max(0, int(state["current"]))
+    total = max(0, int(state["total"]))
+    if state["phase"] == "packing":
+        ratio = 1.0
+    elif total:
+        ratio = min(1.0, current / total)
+    else:
+        ratio = 0.0
+    percent = int(round(ratio * 100))
+    elapsed = max(0.0, float(state["elapsed"]))
+
+    if state["phase"] == "translating" and total and 0 < current < total and elapsed > 0:
+        eta = "预计剩余 " + _human_seconds(elapsed / current * (total - current))
+    elif state["phase"] == "translating" and not total:
+        eta = "正在分析版面…"
+    else:
+        eta = ""
+
+    if state["phase"] == "cancelled":
+        head, tone = "翻译已取消", "cancelled"
+    elif state["phase"] == "error":
+        head, tone = state["note"] or "翻译失败", "error"
+    else:
+        head, tone = state["note"] or "正在翻译…", "running"
+
+    facts = []
+    if total:
+        facts.append(f"第 {min(current, total)} / {total} 页")
+    facts.append(f"已用 {_human_seconds(elapsed)}")
+    if eta:
+        facts.append(eta)
+
+    return (
+        f'<div class="tr-progress tr-progress-{tone}">'
+        f'<div class="tr-progress-ring">{percent}%</div>'
+        f'<div class="tr-progress-head">{_html_escape(head)}</div>'
+        f'<div class="tr-progress-track">'
+        f'<div class="tr-progress-fill" style="width:{percent}%"></div></div>'
+        f'<div class="tr-progress-meta">{_html_escape(" · ".join(facts))}</div>'
+        f"</div>"
+    )
+
+
+def _stream_outputs(status_html):
+    """生成器中间帧：只刷新进度面板，其余输出用 gr.skip() 保持不变。"""
+    return (
+        gr.skip(), gr.skip(), gr.skip(),
+        gr.skip(), gr.skip(), gr.skip(),
+        status_html,
+    )
+
+
 initial_original, initial_translated = (None, None) if flag_demo else latest_pair("pdf2zh_files")
 initial_dual = (
     initial_translated.with_name(initial_translated.name.removesuffix("-mono.pdf") + "-dual.pdf")
@@ -584,11 +745,13 @@ initial_dual = (
 
 def preview_uploaded_file(file):
     # A new upload must not retain the previous document's translation/downloads.
+    _progress_reset()
     return (
         reader_html(file),
         gr.update(value=None, visible=False),
         gr.update(value=None, visible=False),
         gr.update(visible=False),
+        progress_html(),
     )
 
 
@@ -706,14 +869,17 @@ with gr.Blocks(
     with gr.Row(elem_id="upload-form"):
         with gr.Column(scale=1):
             gr.Markdown("## 上传文档（小于 5 MB）" if flag_demo else "## 上传文档")
-            file_input = gr.File(
-                label="选择文档",
-                show_label=False,
-                file_count="single",
-                file_types=[".pdf", ".doc", ".docx"],
-                type="filepath",
-                elem_classes=["input-file"],
-            )
+            # 上传区与进度浮层放在同一个定位容器里：翻译时浮层直接盖在上传区上。
+            with gr.Column(elem_id="upload-dropzone"):
+                file_input = gr.File(
+                    label="选择文档",
+                    show_label=False,
+                    file_count="single",
+                    file_types=[".pdf", ".doc", ".docx"],
+                    type="filepath",
+                    elem_classes=["input-file"],
+                )
+                translate_status = gr.HTML(progress_html(), elem_id="translate-progress")
             link_input = gr.Textbox(
                 label="文档链接",
                 placeholder="请输入可下载的 PDF 文件网址",
@@ -918,7 +1084,7 @@ with gr.Blocks(
     file_input.change(
         preview_uploaded_file,
         inputs=file_input,
-        outputs=[preview, output_file_mono, output_file_dual, output_title],
+        outputs=[preview, output_file_mono, output_file_dual, output_title, translate_status],
         js=(
             f"""
             (a,b)=>{{
@@ -966,7 +1132,10 @@ with gr.Blocks(
             output_file_mono,
             output_file_dual,
             output_title,
+            translate_status,
         ],
+        # 进度由上传区上的自绘浮层显示，关掉 Gradio 自带的进度条，免得两者叠在一起。
+        show_progress="hidden",
     ).success(fn=None, inputs=[preview], outputs=None, js=open_reader_js)
 
     cancellation_btn.click(

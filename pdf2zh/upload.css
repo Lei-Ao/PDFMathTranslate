@@ -100,3 +100,23 @@ body, body.dark { background: #fcfdfa !important; }
 #upload-form .label-wrap,#upload-form .label-wrap span { color:#65785f!important; }
 #save-model-settings,#cancel-model-settings { min-height:38px; font-size:12px; }#save-model-settings { background:#217965!important; color:#fff!important; border:0!important; }
 @media(max-width:760px) { #model-settings-button { top:13px; right:16px; max-width:calc(100vw - 180px); font-size:10px; }#model-settings-overlay { padding:16px!important; }#model-settings-dialog { padding:22px!important; max-height:calc(100dvh - 32px); } }
+
+/* ---------- 翻译进度浮层：直接盖在"上传文档"区域上（见 gui.py 的 progress_html） ---------- */
+#upload-dropzone { position:relative; }
+#translate-progress { position:absolute!important; inset:0!important; z-index:20; margin:0!important; padding:0!important; min-height:0!important; background:transparent!important; border:0!important; box-shadow:none!important; overflow:visible!important; }
+#translate-progress .html-container,#translate-progress .prose { margin:0!important; padding:0!important; height:100%!important; }
+#translate-progress:not(:has(.tr-progress)) { display:none!important; }
+.tr-progress { height:100%; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:13px; padding:22px; border:1px dashed #b9cbb3; border-radius:12px; background:#f6f9f2; text-align:center; }
+.tr-progress-ring { font-family:Georgia,"Songti SC","SimSun",serif; font-size:48px; line-height:1; letter-spacing:1px; color:#217965; }
+.tr-progress-head { font-size:13px; color:#3c6a52; }
+.tr-progress-track { width:min(330px,78%); height:7px; border-radius:99px; background:#e2ebdf; overflow:hidden; }
+.tr-progress-fill { height:100%; border-radius:99px; background:#217965; transition:width .35s ease; }
+.tr-progress-meta { font-size:11px; color:#7d8c78; letter-spacing:.3px; }
+.tr-progress-running .tr-progress-fill { background:linear-gradient(90deg,#4f9a6f,#217965,#4f9a6f); background-size:200% 100%; animation:tr-progress-move 1.6s linear infinite; }
+@keyframes tr-progress-move { from { background-position:0% 0; } to { background-position:200% 0; } }
+.tr-progress-error { border-color:#e6c9bf; background:#fdf3f0; pointer-events:none; }
+.tr-progress-error .tr-progress-ring,.tr-progress-error .tr-progress-head { color:#b3452f; }
+.tr-progress-error .tr-progress-fill { background:#cf7a5f; animation:none; }
+.tr-progress-cancelled { border-color:#dcdcd2; background:#f6f6f2; pointer-events:none; }
+.tr-progress-cancelled .tr-progress-ring,.tr-progress-cancelled .tr-progress-head { color:#8b8b7d; }
+.tr-progress-cancelled .tr-progress-fill { background:#a9ab9c; animation:none; }
