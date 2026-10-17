@@ -1,0 +1,2 @@
+由安装包创建（Inno Setup [Files] 段）。它的存在会让程序把日志、翻译结果等数据写到
+%LOCALAPPDATA%\PDFMathTranslate，而不是安装目录，避免卸载时连翻译结果一起删掉。

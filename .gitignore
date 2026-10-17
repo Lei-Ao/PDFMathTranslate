@@ -181,3 +181,14 @@ uv.lock
 
 # Gradio runtime state
 .gradio/
+
+# Local desktop state, credentials and generated artifacts
+.gradio/
+.desktop-webview/
+.desktop-browser/
+data/
+*.exe
+*.zip
+.env.*
+!.env.example
+!desktop/desktop_build.spec
