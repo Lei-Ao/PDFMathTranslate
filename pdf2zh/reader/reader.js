@@ -166,13 +166,26 @@
     catch { $("notice").hidden = false; $("notice").textContent = "浏览器未允许全屏，请使用浏览器全屏模式。"; }
   };
   $("focus").onclick = () => { $("reader-menu").open = false; document.body.classList.add("focus-reading"); };
+  // 在新窗口打开翻译工作台：本窗口继续留着当前这份文献。桌面版有 pywebview 桥，
+  // 浏览器版退回 window.open。
+  $("new-window").onclick = () => {
+    $("reader-menu").open = false;
+    const path = "/";
+    const bridge = window.pywebview && window.pywebview.api;
+    if (bridge && typeof bridge.open_window === "function") { bridge.open_window(path); return; }
+    window.open(new URL(path, location.origin).href, "_blank", "noopener");
+  };
   $("focus-exit").onclick = () => document.body.classList.remove("focus-reading");
   document.addEventListener("keydown", event => { if (event.key === "Escape") { document.body.classList.remove("focus-reading"); $("reader-menu").open = false; } });
   document.addEventListener("click", event => { if (!event.target.closest("#reader-menu")) $("reader-menu").open = false; });
   new ResizeObserver(sizePages).observe(document.querySelector("main"));
 
   async function start() {
-    if (token === "empty") { for (const control of document.querySelectorAll("button,input,select")) control.disabled = true; return; }
+    if (token === "empty") {
+      for (const control of document.querySelectorAll("button,input,select")) control.disabled = true;
+      $("new-window").disabled = false;  // 还没有文档时也能另开一个窗口去翻译
+      return;
+    }
     try {
       const response = await fetch(api(`document/${token}`));
       if (!response.ok) throw new Error("预览已失效，请刷新主页面或重新上传文件。");

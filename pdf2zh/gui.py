@@ -9,6 +9,7 @@ import time
 import traceback
 import uuid
 from asyncio import CancelledError
+from functools import partial
 from html import escape as _html_escape
 from pathlib import Path
 import typing as T
@@ -23,7 +24,8 @@ from pdf2zh import __version__
 from pdf2zh.high_level import translate
 from pdf2zh.doclayout import ModelInstance
 from pdf2zh.config import ConfigManager
-from pdf2zh.comparison import reader_html, latest_pair, launch_kwargs
+from pdf2zh.comparison import reader_html, launch_kwargs
+from pdf2zh.history import create_translation_dir, get_translation, list_translations, record_completed
 from pdf2zh.model_settings import is_secret, load_service_settings, save_service_settings
 from pdf2zh.translator import (
     AnythingLLMTranslator,
@@ -304,8 +306,7 @@ def translate_file(
     if flag_demo and not verify_recaptcha(recaptcha_response):
         raise gr.Error("人机验证未通过，请重试")
 
-    output = Path("pdf2zh_files")
-    output.mkdir(parents=True, exist_ok=True)
+    output = create_translation_dir()
 
     if file_type == "File":
         if not file_input:
@@ -357,7 +358,8 @@ def translate_file(
     except ValueError:
         threads = 1
 
-    _progress_begin("正在准备翻译…")
+    box = state["progress"]
+    _progress_begin(box, "正在准备翻译…")
 
     # 翻译在后台线程里跑，本生成器负责把进度实时 yield 给界面。
     progress_queue: queue.Queue = queue.Queue()
@@ -369,7 +371,7 @@ def translate_file(
             total = int(getattr(t, "total", 0) or 0)
         except (TypeError, ValueError):
             return
-        _progress_update(current, total)
+        _progress_update(box, current, total)
         progress_queue.put(None)
 
     def run_translation():
@@ -415,31 +417,36 @@ def translate_file(
             progress_queue.get(timeout=0.4)
         except queue.Empty:
             pass
-        snapshot = _progress_snapshot()
-        yield _stream_outputs(progress_html(snapshot))
+        yield _stream_outputs(progress_html(_progress_snapshot(box)))
     worker.join()
 
     if "error" in outcome:
         error = outcome["error"]
         if isinstance(error, CancelledError):
             cancellation_event_map.pop(session_id, None)
-            _progress_finish("cancelled", "翻译已取消")
-            yield _stream_outputs(progress_html())
+            _progress_finish(box, "cancelled", "翻译已取消")
+            yield _stream_outputs(progress_html(_progress_snapshot(box)))
             raise gr.Error("翻译已取消")
-        _progress_finish("error", "翻译失败，详情见运行日志")
-        yield _stream_outputs(progress_html())
+        _progress_finish(box, "error", "翻译失败，详情见运行日志")
+        yield _stream_outputs(progress_html(_progress_snapshot(box)))
         raise gr.Error(f"翻译失败：{error}")
 
-    _progress_stage("packing", "正在生成 PDF…")
-    yield _stream_outputs(progress_html())
+    _progress_stage(box, "packing", "正在生成 PDF…")
+    yield _stream_outputs(progress_html(_progress_snapshot(box)))
     print(f"Files after translation: {os.listdir(output)}")
 
     if not file_mono.exists() or not file_dual.exists():
-        _progress_finish("error", "未生成翻译结果")
-        yield _stream_outputs(progress_html())
+        _progress_finish(box, "error", "未生成翻译结果")
+        yield _stream_outputs(progress_html(_progress_snapshot(box)))
         raise gr.Error("未生成翻译结果，请检查服务配置和日志")
 
-    _progress_finish("done", "翻译完成")
+    if not flag_demo:
+        try:
+            record_completed(file_raw, file_mono, file_dual)
+        except OSError:
+            logger.exception("Failed to save translation history")
+            gr.Warning("译文已生成，但历史记录保存失败，请从本页下载文件并检查运行日志。")
+    _progress_finish(box, "done", "翻译完成")
 
     yield (
         str(file_mono),
@@ -448,7 +455,7 @@ def translate_file(
         gr.update(visible=True),
         gr.update(visible=True),
         gr.update(visible=True),
-        progress_html(),
+        progress_html(_progress_snapshot(box)),
     )
 
 
@@ -610,60 +617,65 @@ cancellation_event_map = {}
 # --------------------------------------------------------------- 翻译进度面板
 # translate_file 是生成器：真正的翻译跑在后台线程里，主线程每 0.4 秒把一次进度
 # 快照 yield 给界面。这样翻译过程中面板会一直走动，不会让人误以为没有在翻译。
-_TRANSLATE_PROGRESS = {
-    "active": False,
-    "phase": "idle",  # idle / preparing / translating / packing / done / cancelled / error
-    "current": 0,
-    "total": 0,
-    "started": 0.0,
-    "elapsed": 0.0,
-    "note": "",
-}
-_translate_progress_lock = threading.Lock()
+# 进度格存在每个会话自己的 gr.State 里（state["progress"]）：同时开两个窗口时，
+# 各自显示各自的进度，新窗口打开时也不会顶着别的窗口的进度条。
+_progress_lock = threading.Lock()
 
 
-def _progress_reset():
-    with _translate_progress_lock:
-        _TRANSLATE_PROGRESS.update(
+def new_progress():
+    return {
+        "active": False,
+        "phase": "idle",  # idle / preparing / translating / packing / done / cancelled / error
+        "current": 0,
+        "total": 0,
+        "started": 0.0,
+        "elapsed": 0.0,
+        "note": "",
+    }
+
+
+def _progress_reset(box):
+    with _progress_lock:
+        box.update(
             active=False, phase="idle", current=0,
             total=0, started=0.0, elapsed=0.0, note="",
         )
 
 
-def _progress_begin(note):
-    with _translate_progress_lock:
-        _TRANSLATE_PROGRESS.update(
+def _progress_begin(box, note):
+    with _progress_lock:
+        box.update(
             active=True, phase="preparing", current=0,
             total=0, started=time.time(), elapsed=0.0, note=note,
         )
 
 
-def _progress_update(current, total):
-    with _translate_progress_lock:
-        _TRANSLATE_PROGRESS["current"] = current
-        _TRANSLATE_PROGRESS["total"] = total
+def _progress_update(box, current, total):
+    with _progress_lock:
+        box["current"] = current
+        box["total"] = total
         if total:
-            _TRANSLATE_PROGRESS["phase"] = "translating"
-            _TRANSLATE_PROGRESS["note"] = "正在翻译文档…"
+            box["phase"] = "translating"
+            box["note"] = "正在翻译文档…"
 
 
-def _progress_stage(phase, note):
-    with _translate_progress_lock:
-        _TRANSLATE_PROGRESS["phase"] = phase
-        _TRANSLATE_PROGRESS["note"] = note
+def _progress_stage(box, phase, note):
+    with _progress_lock:
+        box["phase"] = phase
+        box["note"] = note
 
 
-def _progress_finish(phase, note):
-    with _translate_progress_lock:
-        started = _TRANSLATE_PROGRESS["started"] or time.time()
-        _TRANSLATE_PROGRESS.update(
+def _progress_finish(box, phase, note):
+    with _progress_lock:
+        started = box["started"] or time.time()
+        box.update(
             active=False, phase=phase, note=note, elapsed=time.time() - started,
         )
 
 
-def _progress_snapshot():
-    with _translate_progress_lock:
-        state = dict(_TRANSLATE_PROGRESS)
+def _progress_snapshot(box):
+    with _progress_lock:
+        state = dict(box)
     if state["active"] and state["started"]:
         state["elapsed"] = time.time() - state["started"]
     return state
@@ -676,9 +688,9 @@ def _human_seconds(value):
     return f"{value // 60} 分 {value % 60:02d} 秒"
 
 
-def progress_html(snapshot=None):
+def progress_html(snapshot):
     """把进度快照渲染成覆盖在上传区上的浮层 HTML；空闲或已完成时返回空串。"""
-    state = _progress_snapshot() if snapshot is None else snapshot
+    state = snapshot
     # 翻译完成后界面会自动跳到对照阅读页，这里直接收起浮层，
     # 免得返回上传页时还盖着一块"翻译完成"挡住上传区。
     if state["phase"] in ("idle", "done"):
@@ -736,22 +748,15 @@ def _stream_outputs(status_html):
     )
 
 
-initial_original, initial_translated = (None, None) if flag_demo else latest_pair("pdf2zh_files")
-initial_dual = (
-    initial_translated.with_name(initial_translated.name.removesuffix("-mono.pdf") + "-dual.pdf")
-    if initial_translated else None
-)
-
-
-def preview_uploaded_file(file):
+def preview_uploaded_file(file, state):
     # A new upload must not retain the previous document's translation/downloads.
-    _progress_reset()
+    _progress_reset(state["progress"])
     return (
         reader_html(file),
         gr.update(value=None, visible=False),
         gr.update(value=None, visible=False),
         gr.update(visible=False),
-        progress_html(),
+        progress_html(_progress_snapshot(state["progress"])),
     )
 
 
@@ -763,19 +768,29 @@ open_reader_js = """(html) => {
 }"""
 
 
-def reopen_latest_translation():
-    original, translated = latest_pair("pdf2zh_files")
-    if not original or not translated:
-        raise gr.Error("还没有已完成的翻译，请先上传并翻译文档。")
-    return reader_html(original, translated)
+# 界面上的"新建窗口"：桌面版有 pywebview 桥，WebView2 窗口里也能再开一个原生窗口；
+# 浏览器版没有桥，退回 window.open。新窗口是独立会话，于是可以一边读一份文献、
+# 一边翻译另一份。
+open_new_window_js = """() => {
+    const path = "/";
+    const bridge = window.pywebview && window.pywebview.api;
+    if (bridge && typeof bridge.open_window === "function") {
+        bridge.open_window(path);
+        return;
+    }
+    window.open(new URL(path, window.location.href).href, "_blank", "noopener");
+}"""
 
 
-def refresh_recent_document():
-    original, translated = (None, None) if flag_demo else latest_pair("pdf2zh_files")
-    return gr.update(
-        value=f"▤ {original.name}" if original else "继续阅读最近译文",
-        visible=bool(translated),
-    )
+def reopen_translation(record_id):
+    record = None if flag_demo else get_translation(record_id)
+    if record is None:
+        raise gr.Error("这份译文的文件已移动或不可访问，请刷新历史列表。")
+    return reader_html(record["original"], record["translated"])
+
+
+def refresh_recent_documents():
+    return [] if flag_demo else list_translations()
 
 
 def selected_model_service():
@@ -814,9 +829,7 @@ with gr.Blocks(
         '<div class="workspace-brand"><span class="workspace-mark">Ⅱ</span>页间阅读</div>'
         '<div class="workspace-caption">你的 PDF 翻译工作台</div>'
         '<a href="/" class="workspace-new"><span>＋</span>新建翻译</a>'
-        '<div class="workspace-library-label">最近译文</div>'
-        + ('' if initial_translated else '<p class="workspace-empty">导入第一份文档，<br>开始跨越语言的阅读。</p>')
-        + '<div class="workspace-bottom"><span class="local-dot"></span><div>本地工作空间'
+        '<div class="workspace-bottom"><span class="local-dot"></span><div>本地工作空间'
         '<small>文件与译文保存在此设备</small></div></div></aside>'
         '<header class="workspace-topbar"><div class="workspace-crumb">工作空间<span>/</span>'
         '<b>新建翻译</b></div></header>',
@@ -861,10 +874,37 @@ with gr.Blocks(
         '保留公式、图表与版面，让原文和译文并肩呈现。</p>',
         elem_id="welcome-hero",
     )
-    resume_btn = gr.Button(
-        f"▤ {initial_original.name}" if initial_original else "继续阅读最近译文",
-        visible=bool(initial_translated), elem_id="resume-document",
-    )
+    recent_documents = gr.State(refresh_recent_documents())
+    recent_load = demo.load(refresh_recent_documents, outputs=recent_documents, queue=False)
+    with gr.Column(elem_id="recent-documents"):
+        with gr.Accordion("最近译文", open=True, elem_id="recent-documents-panel"):
+            with gr.Column(elem_id="recent-documents-list"):
+                @gr.render(
+                    inputs=[recent_documents], triggers=[recent_load.success, recent_documents.change],
+                    queue=False, show_progress="hidden",
+                )
+                def render_recent_documents(records):
+                    if not records:
+                        gr.HTML('<p class="workspace-empty">还没有已完成的译文。<br>翻译完成后会保存在这里。</p>')
+                    for record in records:
+                        with gr.Column(elem_classes=["recent-document-entry"], key=record["id"]):
+                            button = gr.Button(
+                                f"▤ {record['name']}",
+                                elem_classes=["recent-document-button"],
+                                key=f"recent-{record['id']}",
+                            )
+                            date = time.strftime("%Y-%m-%d %H:%M", time.localtime(record["completed_at"]))
+                            title = _html_escape(f"{record['name']}\n{record['original']}", quote=True)
+                            gr.HTML(
+                                f'<div class="recent-document-meta" title="{title}">'
+                                f'{date} · {_html_escape(record["location"])}</div>',
+                                key=f"meta-{record['id']}",
+                            )
+                            button.click(partial(reopen_translation, record["id"]), outputs=preview).success(
+                                fn=None, inputs=[preview], outputs=None, js=open_reader_js,
+                            )
+    # 再开一个窗口（独立会话）：在另一个窗口里翻译，本窗口继续看文献。
+    new_window_btn = gr.Button("⧉ 新建窗口", elem_id="new-window-button")
 
     with gr.Row(elem_id="upload-form"):
         with gr.Column(scale=1):
@@ -879,7 +919,8 @@ with gr.Blocks(
                     type="filepath",
                     elem_classes=["input-file"],
                 )
-                translate_status = gr.HTML(progress_html(), elem_id="translate-progress")
+                # 初始为空串：进度只属于当前会话，新窗口不该顶着别处的进度条。
+                translate_status = gr.HTML("", elem_id="translate-progress")
             link_input = gr.Textbox(
                 label="文档链接",
                 placeholder="请输入可下载的 PDF 文件网址",
@@ -990,11 +1031,11 @@ with gr.Blocks(
 
             output_title = gr.Markdown("## 下载翻译结果", visible=False)
             output_file_mono = gr.File(
-                label="译文 PDF", value=str(initial_translated) if initial_translated else None,
+                label="译文 PDF", value=None,
                 visible=False, interactive=False,
             )
             output_file_dual = gr.File(
-                label="双语 PDF", value=str(initial_dual) if initial_dual and initial_dual.exists() else None,
+                label="双语 PDF", value=None,
                 visible=False, interactive=False,
             )
             recaptcha_response = gr.Textbox(
@@ -1042,10 +1083,7 @@ with gr.Blocks(
             )
 
     preview = gr.HTML(reader_html(), elem_id="comparison-reader")
-    resume_btn.click(reopen_latest_translation, outputs=preview).success(
-        fn=None, inputs=[preview], outputs=None, js=open_reader_js,
-    )
-    demo.load(refresh_recent_document, outputs=resume_btn, queue=False)
+    new_window_btn.click(fn=None, js=open_new_window_js, queue=False)
 
     def restore_model_settings(open_panel=False):
         name = selected_model_service()
@@ -1080,10 +1118,13 @@ with gr.Blocks(
         on_select_service, inputs=[service], outputs=envs + [show_api_key, api_extra],
     )
 
+    # 会话自己的状态：取消翻译用的 session_id，以及这个窗口的翻译进度格。
+    state = gr.State({"session_id": None, "progress": new_progress()})
+
     # Event handlers
     file_input.change(
         preview_uploaded_file,
-        inputs=file_input,
+        inputs=[file_input, state],
         outputs=[preview, output_file_mono, output_file_dual, output_title, translate_status],
         js=(
             f"""
@@ -1101,8 +1142,6 @@ with gr.Blocks(
             else ""
         ),
     )
-
-    state = gr.State({"session_id": None})
 
     translate_btn.click(
         translate_file,
@@ -1136,6 +1175,8 @@ with gr.Blocks(
         ],
         # 进度由上传区上的自绘浮层显示，关掉 Gradio 自带的进度条，免得两者叠在一起。
         show_progress="hidden",
+    ).success(
+        refresh_recent_documents, outputs=recent_documents, queue=False,
     ).success(fn=None, inputs=[preview], outputs=None, js=open_reader_js)
 
     cancellation_btn.click(
